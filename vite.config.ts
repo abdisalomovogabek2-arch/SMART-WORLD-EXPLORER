@@ -174,6 +174,11 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       host: true
+    },
+    preview: {
+      port: 5173,
+      host: true,
+      allowedHosts: ['smart-world-explorer.onrender.com', '.onrender.com', 'localhost']
     }
   };
 });
