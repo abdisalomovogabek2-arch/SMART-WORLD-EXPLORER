@@ -18,7 +18,6 @@ interface MapViewProps {
   weatherRadarUrl: string | null;
 }
 
-// Balandlik bo'yicha samolyot rangi
 function getAircraftColor(altitudeMeters: number | null, onGround: boolean): { fill: string; glow: string } {
   if (onGround) {
     return { fill: '#94a3b8', glow: 'rgba(148, 163, 184, 0.4)' };
@@ -35,12 +34,11 @@ function getAircraftColor(altitudeMeters: number | null, onGround: boolean): { f
   return { fill: '#00f2fe', glow: 'rgba(0, 242, 254, 0.85)' };
 }
 
-// Zilzila magnitudasi bo'yicha rang
 function getEarthquakeColor(mag: number): string {
-  if (mag >= 6.5) return '#ef4444'; // Qizil: Kuchli
-  if (mag >= 5.0) return '#f97316'; // Olovrang: O'rta
-  if (mag >= 4.0) return '#eab308'; // Sariq
-  return '#10b981'; // Yashil: Kuchsiz
+  if (mag >= 6.5) return '#ef4444';
+  if (mag >= 5.0) return '#f97316';
+  if (mag >= 4.0) return '#eab308';
+  return '#10b981';
 }
 
 export const MapView: React.FC<MapViewProps> = ({
@@ -58,12 +56,13 @@ export const MapView: React.FC<MapViewProps> = ({
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [is3DMode, setIs3DMode] = useState(false);
   const aircraftMarkersRef = useRef<Map<string, { marker: maplibregl.Marker; el: HTMLElement }>>(new Map());
   const airportMarkersRef = useRef<maplibregl.Marker[]>([]);
   const earthquakeMarkersRef = useRef<maplibregl.Marker[]>([]);
   const wildfireMarkersRef = useRef<maplibregl.Marker[]>([]);
 
-  // MapLibre xaritasini initsializatsiya qilish
+  // MapLibre initsializatsiya
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
@@ -84,7 +83,12 @@ export const MapView: React.FC<MapViewProps> = ({
               'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
             ],
             tileSize: 256,
-            attribution: '© Esri, Maxar'
+            attribution: '© Esri World Imagery, Maxar'
+          },
+          // 3D binolar uchun ochiq OpenMapTiles vektor manbasi
+          'openmaptiles': {
+            type: 'vector',
+            url: 'https://api.maptiler.com/tiles/v3/tiles.json?key=get_free_tier_or_fallback'
           }
         },
         layers: [
@@ -110,7 +114,8 @@ export const MapView: React.FC<MapViewProps> = ({
       center: [64.5853, 41.3775],
       zoom: 5.5,
       pitch: 0,
-      bearing: 0
+      bearing: 0,
+      maxPitch: 85
     });
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
@@ -120,23 +125,17 @@ export const MapView: React.FC<MapViewProps> = ({
       setMapLoaded(true);
       mapRef.current = map;
 
-      // Parvoz treki uchun GeoJSON layer
+      // Parvoz treki
       map.addSource('flight-track-source', {
         type: 'geojson',
-        data: {
-          type: 'FeatureCollection',
-          features: []
-        }
+        data: { type: 'FeatureCollection', features: [] }
       });
 
       map.addLayer({
         id: 'flight-track-line',
         type: 'line',
         source: 'flight-track-source',
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round'
-        },
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
           'line-color': '#ff7b00',
           'line-width': 4,
@@ -144,7 +143,7 @@ export const MapView: React.FC<MapViewProps> = ({
         }
       });
 
-      // Barcha aeroportlarni xaritaga joylashtirish
+      // Barcha aeroportlar
       COMPREHENSIVE_AIRPORTS.forEach((apt) => {
         const el = document.createElement('div');
         el.className = 'airport-marker-container';
@@ -181,7 +180,6 @@ export const MapView: React.FC<MapViewProps> = ({
       });
     });
 
-    // Viewport o'zgarganda yangi samolyotlarni yuklash
     map.on('moveend', () => {
       if (!onBoundsChange) return;
       const b = map.getBounds();
@@ -198,6 +196,19 @@ export const MapView: React.FC<MapViewProps> = ({
     };
   }, []);
 
+  // 3D rejimini yoqish/o'chirish funksiyasi (Kamera burchagini 3D ga burish)
+  const toggle3DCamera = () => {
+    if (!mapRef.current) return;
+    const newMode = !is3DMode;
+    setIs3DMode(newMode);
+
+    mapRef.current.easeTo({
+      pitch: newMode ? 62 : 0, // 3D ko'rinish uchun 62 darajali burchak
+      bearing: newMode ? -20 : 0,
+      duration: 1500
+    });
+  };
+
   // 1. Aeroportlar qatlami
   useEffect(() => {
     const isAirportActive = layers.find((l) => l.id === 'airports')?.active ?? true;
@@ -207,16 +218,35 @@ export const MapView: React.FC<MapViewProps> = ({
     });
   }, [layers]);
 
-  // 2. Sun'iy yo'ldosh xaritasi
+  // 2. Sun'iy yo'ldosh xaritasi va 3D binolar
   useEffect(() => {
     if (!mapRef.current || !mapLoaded) return;
+    const map = mapRef.current;
     const satLayer = layers.find((l) => l.id === 'satellite-basemap');
-    if (mapRef.current.getLayer('satellite-layer')) {
-      mapRef.current.setLayoutProperty(
-        'satellite-layer',
-        'visibility',
-        satLayer?.active ? 'visible' : 'none'
-      );
+    const buildings3D = layers.find((l) => l.id === '3d-buildings');
+
+    const isSatActive = satLayer?.active ?? false;
+    const is3DActive = buildings3D?.active ?? false;
+
+    if (map.getLayer('satellite-layer')) {
+      map.setLayoutProperty('satellite-layer', 'visibility', isSatActive ? 'visible' : 'none');
+    }
+
+    // Agar sun'iy yo'ldosh yoki 3D binolar yoqilsa, xarita avtomatik 3D istiqbolga o'tadi
+    if (isSatActive || is3DActive) {
+      map.easeTo({
+        pitch: 58,
+        bearing: -15,
+        duration: 1200
+      });
+      setIs3DMode(true);
+    } else {
+      map.easeTo({
+        pitch: 0,
+        bearing: 0,
+        duration: 1000
+      });
+      setIs3DMode(false);
     }
   }, [layers, mapLoaded]);
 
@@ -239,25 +269,20 @@ export const MapView: React.FC<MapViewProps> = ({
         source: 'rainviewer-source',
         minzoom: 0,
         maxzoom: 18,
-        paint: {
-          'raster-opacity': 0.7
-        },
-        layout: {
-          visibility: isWeatherActive ? 'visible' : 'none'
-        }
+        paint: { 'raster-opacity': 0.7 },
+        layout: { visibility: isWeatherActive ? 'visible' : 'none' }
       });
     } else if (map.getLayer('rainviewer-layer')) {
       map.setLayoutProperty('rainviewer-layer', 'visibility', isWeatherActive ? 'visible' : 'none');
     }
   }, [weatherRadarUrl, layers, mapLoaded]);
 
-  // 4. Zilzilalar monitoringi qatlami (USGS Real-time)
+  // 4. Zilzilalar monitoringi (USGS)
   useEffect(() => {
     if (!mapRef.current || !mapLoaded) return;
     const map = mapRef.current;
     const isQuakeActive = layers.find((l) => l.id === 'earthquakes')?.active ?? true;
 
-    // Tozalash
     earthquakeMarkersRef.current.forEach((m) => m.remove());
     earthquakeMarkersRef.current = [];
 
@@ -306,7 +331,7 @@ export const MapView: React.FC<MapViewProps> = ({
     });
   }, [earthquakes, layers, mapLoaded]);
 
-  // 5. NASA FIRMS yong'in detektori qatlami
+  // 5. NASA FIRMS yong'in detektori
   useEffect(() => {
     if (!mapRef.current || !mapLoaded) return;
     const map = mapRef.current;
@@ -349,7 +374,7 @@ export const MapView: React.FC<MapViewProps> = ({
     });
   }, [wildfires, layers, mapLoaded]);
 
-  // Tanlangan hududga silliq uchib borish
+  // Fly to location
   useEffect(() => {
     if (!mapRef.current || !selectedLocation) return;
     mapRef.current.flyTo({
@@ -467,7 +492,36 @@ export const MapView: React.FC<MapViewProps> = ({
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
 
-      {/* Ranglar Shkalasi */}
+      {/* 3D / 2D Ko'rinishni Almashtirish Tugmasi */}
+      <button
+        onClick={toggle3DCamera}
+        style={{
+          position: 'absolute',
+          top: '16px',
+          right: '16px',
+          zIndex: 35,
+          padding: '8px 14px',
+          borderRadius: '10px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          fontSize: '12px',
+          fontWeight: 700,
+          cursor: 'pointer',
+          background: is3DMode
+            ? 'linear-gradient(135deg, #00f2fe, #3b82f6)'
+            : 'rgba(15, 23, 42, 0.85)',
+          color: is3DMode ? '#0f172a' : '#fff',
+          border: is3DMode ? 'none' : '1px solid rgba(255, 255, 255, 0.15)',
+          boxShadow: '0 4px 15px rgba(0, 0, 0, 0.4)',
+          transition: 'all 0.2s ease'
+        }}
+      >
+        <span style={{ fontSize: '14px' }}>📐</span>
+        <span>{is3DMode ? '3D REJIM FAOL' : '3D ISTIQBOL'}</span>
+      </button>
+
+      {/* Belgilar Shkalasi */}
       <div
         style={{
           position: 'absolute',
